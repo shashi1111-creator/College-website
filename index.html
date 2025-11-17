@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple Q&A (LocalStorage) — Student & Faculty</title>
+  <style>
+    :root { --bg:#f4f6fb; --card:#fff; --muted:#6b7280; --accent:#2563eb; }
+    body{font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);margin:0;padding:24px}
+    .wrap{max-width:900px;margin:0 auto}
+    .card{background:var(--card);border-radius:12px;padding:16px;box-shadow:0 6px 18px rgba(16,24,40,0.06);}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    h1{margin:0;font-size:20px}
+    .muted{color:var(--muted);font-size:13px}
+    .row{display:flex;gap:12px}
+    input,textarea,select{width:100%;padding:8px;border:1px solid #e6e9ef;border-radius:8px;font-size:14px}
+    button{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;border:none;cursor:pointer}
+    .small-btn{background:#e6eefc;color:var(--accent);padding:6px 8px;border-radius:8px;border:1px solid #dbeafe}
+    .cols{display:grid;grid-template-columns:1fr 320px;gap:16px}
+    .question{border:1px solid #eef2ff;padding:10px;border-radius:8px;margin-top:10px}
+    .answer{background:#f8fff7;padding:8px;border-radius:8px;margin:8px 0 0 12px}
+    .meta{font-size:12px;color:var(--muted)}
+    .leaderboard li{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #f1f5f9}
+    .leaderboard{list-style:none;margin:0;padding:0}
+    .login{display:flex;gap:8px;align-items:center}
+    .role-badge{padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#0f172a;font-weight:600;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>College Q&A (LocalStorage)</h1>
+        <div class="muted">Ask, answer, upvote — points & leaderboard. Works offline.</div>
+      </div>
+      <div id="userPanel"></div>
+    </header>
+
+    <div class="cols">
+      <main>
+        <div class="card">
+          <div id="askSection">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+              <input id="questionInput" placeholder="Type your question..." />
+              <button id="postQ">Post</button>
+            </div>
+            <div class="muted">You must be signed in to post or answer. Sign in on the top-right.</div>
+          </div>
+
+          <section id="questionsList"></section>
+        </div>
+      </main>
+
+      <aside>
+        <div class="card">
+          <h3 style="margin:0 0 8px 0">Leaderboard</h3>
+          <ol id="leaderboard" class="leaderboard"></ol>
+          <div style="margin-top:12px" class="muted">Points: +5 per upvote, +10 when your answer is accepted.</div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <h3 style="margin:0 0 8px 0">About</h3>
+          <div class="muted">This is a simple offline demo using LocalStorage. To get a server-backed version (Firebase), tell me and I'll provide it.</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    // ---------- Data model stored in localStorage ----------
+    // localStorage keys: 'qa_users', 'qa_questions', 'qa_currentUserId'
+    // User: {id, name, role, points, createdAt}
+    // Question: {id, text, authorId, createdAt, answers: [{id,text,authorId,upvotes,accepted,createdAt}]}
+
+    // ----- Helpers -----
+    const uid = () => 'id_' + Math.random().toString(36).slice(2,9)
+    const now = () => new Date().toISOString()
+    const read = (k, fallback) => JSON.parse(localStorage.getItem(k) || JSON.stringify(fallback))
+    const write = (k, v) => localStorage.setItem(k, JSON.stringify(v))
+
+    // Init storage if not present
+    if (!localStorage.getItem('qa_users')) write('qa_users', [])
+    if (!localStorage.getItem('qa_questions')) write('qa_questions', [])
+
+    // Current state
+    let users = read('qa_users', [])
+    let questions = read('qa_questions', [])
+    let currentUserId = localStorage.getItem('qa_currentUserId') || null
+
+    // ----- UI elements -----
+    const userPanel = document.getElementById('userPanel')
+    const questionsList = document.getElementById('questionsList')
+    const leaderboardEl = document.getElementById('leaderboard')
+    const questionInput = document.getElementById('questionInput')
+    const postQ = document.getElementById('postQ')
+
+    // ----- Rendering -----
+    function renderUserPanel(){
+      const cur = users.find(u => u.id === currentUserId)
+      if (cur) {
+        userPanel.innerHTML = `
+          <div class="login">
+            <div style="text-align:right">
+              <div style="font-weight:700">${escapeHtml(cur.name)}</div>
+              <div class="muted">${cur.role} • ${cur.points} pts</div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+              <div class="role-badge">${cur.role}</div>
+              <div>
+                <button class="small-btn" onclick="signOut()">Sign out</button>
+              </div>
+            </div>
+          </div>`
+      } else {
+        userPanel.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="small-btn" onclick="openSignIn()">Sign in / Register</button>
+          </div>`
+      }
+    }
+
+    function renderQuestions(){
+      questionsList.innerHTML = ''
+      if (questions.length === 0) {
+        questionsList.innerHTML = '<div class="muted" style="padding:12px">No questions yet — be the first!</div>'
+        return
+      }
+
+      questions.slice().reverse().forEach(q => { // newest first
+        const container = document.createElement('div')
+        container.className = 'question'
+        const author = users.find(u => u.id === q.authorId)
+        container.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div><strong>Q</strong> ${escapeHtml(q.text)}</div>
+            <div class="meta">${author ? escapeHtml(author.name) : 'Unknown'} • ${new Date(q.createdAt).toLocaleString()}</div>
+          </div>
+        `
+
+        // answers list
+        const answersWrap = document.createElement('div')
+        answersWrap.style.marginTop = '10px'
+        q.answers.forEach(a => {
+          const aEl = document.createElement('div')
+          aEl.className = 'answer'
+          const aAuthor = users.find(u => u.id === a.authorId)
+          aEl.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>${escapeHtml(a.text)}</div>
+              <div class="meta">${aAuthor ? escapeHtml(aAuthor.name) : 'Unknown'}</div>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+              <button class="small-btn" onclick="upvote('${q.id}','${a.id}')">▲ ${a.upvotes}</button>
+              ${a.accepted ? '<span class="small-btn" style="background:#e6fff7;color:#065f46;border:1px solid #d1fae5">Accepted</span>' : ''}
+              ${currentUserId && q.authorId === currentUserId && !a.accepted ? `<button onclick="acceptAnswer('${q.id}','${a.id}')">Accept</button>` : ''}
+            </div>
+          `
+          answersWrap.appendChild(aEl)
+        })
+
+        // answer input
+        const ansDiv = document.createElement('div')
+        ansDiv.style.marginTop = '10px'
+        ansDiv.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="input_${q.id}" placeholder="Write an answer..." />
+            <button onclick="postAnswer('${q.id}')">Answer</button>
+          </div>
+        `
+
+        container.appendChild(answersWrap)
+        container.appendChild(ansDiv)
+        questionsList.appendChild(container)
+      })
+    }
+
+    function renderLeaderboard(){
+      const sorted = users.slice().sort((a,b) => b.points - a.points)
+      leaderboardEl.innerHTML = ''
+      sorted.forEach(u => {
+        const li = document.createElement('li')
+        li.innerHTML = `<span>${escapeHtml(u.name)} <span class="muted" style="font-weight:400">(${u.role})</span></span><strong>${u.points}</strong>`
+        leaderboardEl.appendChild(li)
+      })
+    }
+
+    // ----- Actions -----
+    postQ.addEventListener('click', () => {
+      const cur = users.find(u => u.id === currentUserId)
+      if (!cur) return alert('Please sign in to post a question')
+      const text = questionInput.value.trim()
+      if (!text) return alert('Write a question')
+      const q = { id: uid(), text, authorId: cur.id, createdAt: now(), answers: [] }
+      questions.push(q)
+      write('qa_questions', questions)
+      questionInput.value = ''
+      syncFromStorage()
+    })
+
+    function postAnswer(qId){
+      const cur = users.find(u => u.id === currentUserId)
+      if (!cur) return alert('Please sign in to answer')
+      const input = document.getElementById('input_' + qId)
+      if (!input) return
+      const txt = input.value.trim()
+      if (!txt) return alert('Write an answer')
+      const q = questions.find(x => x.id === qId)
+      if (!q) return alert('Question not found')
+      const ans = { id: uid(), text: txt, authorId: cur.id, upvotes: 0, accepted: false, createdAt: now() }
+      q.answers.push(ans)
+      write('qa_questions', questions)
+      input.value = ''
+      syncFromStorage()
+    }
+
+    function upvote(qId, aId){
+      if (!currentUserId) return alert('Sign in to upvote')
+      const q = questions.find(x => x.id === qId)
+      if (!q) return
+      const a = q.answers.find(x => x.id === aId)
+      if (!a) return
+      a.upvotes = (a.upvotes || 0) + 1
+      // award points to author (+5)
+      const author = users.find(u => u.id === a.authorId)
+      if (author) { author.points = (author.points || 0) + 5 }
+      write('qa_questions', questions)
+      write('qa_users', users)
+      syncFromStorage()
+    }
+
+    function acceptAnswer(qId, aId){
+      const cur = users.find(u => u.id === currentUserId)
+      if (!cur) return alert('Sign in to accept')
+      const q = questions.find(x => x.id === qId)
+      if (!q) return
+      if (q.authorId !== cur.id) return alert('Only question author can accept an answer')
+      const a = q.answers.find(x => x.id === aId)
+      if (!a) return
+      if (a.accepted) return
+      // mark accepted, award +10 to author
+      a.accepted = true
+      const author = users.find(u => u.id === a.authorId)
+      if (author) author.points = (author.points || 0) + 10
+      write('qa_questions', questions)
+      write('qa_users', users)
+      syncFromStorage()
+    }
+
+    // ----- Sign in / Register (simple) -----
+    function openSignIn(){
+      const name = prompt('Enter your name:')
+      if (!name) return
+      const role = prompt('Role (student or faculty):','student') || 'student'
+      const trimmed = role.trim().toLowerCase()
+      const finalRole = (trimmed === 'faculty') ? 'faculty' : 'student'
+
+      // Check existing user with same name+role (simple)
+      let u = users.find(x => x.name === name && x.role === finalRole)
+      if (!u) {
+        u = { id: uid(), name: name, role: finalRole, points: 0, createdAt: now() }
+        users.push(u)
+        write('qa_users', users)
+      }
+      currentUserId = u.id
+      localStorage.setItem('qa_currentUserId', currentUserId)
+      syncFromStorage()
+    }
+
+    function signOut(){
+      localStorage.removeItem('qa_currentUserId')
+      currentUserId = null
+      syncFromStorage()
+    }
+
+    // ----- Sync and escape -----
+    function syncFromStorage(){
+      users = read('qa_users', [])
+      questions = read('qa_questions', [])
+      currentUserId = localStorage.getItem('qa_currentUserId') || null
+      renderUserPanel()
+      renderQuestions()
+      renderLeaderboard()
+    }
+
+    function escapeHtml(s){
+      return String(s).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m] })
+    }
+
+    // Initial render
+    syncFromStorage()
+
+    // Expose some functions to inline onclicks
+    window.openSignIn = openSignIn
+    window.signOut = signOut
+    window.postAnswer = postAnswer
+    window.upvote = upvote
+    window.acceptAnswer = acceptAnswer
+
+  </script>
+</body>
+</html>
+
